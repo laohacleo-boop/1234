@@ -277,10 +277,3 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
           rm -rf ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/build_cert.p12" "$RUNNER_TEMP/build_profile.mobileprovision" 2>/dev/null || true
-
-          # Tự động dọn dẹp file source tạm của user nếu có
-          SOURCE_TAG="${{ inputs.source_tag }}"
-          if [[ "$SOURCE_TAG" =~ ^source-usr_ ]]; then
-            echo "🧹 Đang dọn dẹp file source mod tạm $SOURCE_TAG trên GitHub..."
-            gh release delete "$SOURCE_TAG" --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
-          fi
