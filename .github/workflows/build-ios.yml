@@ -24,6 +24,16 @@ on:
         required: false
         default: 'usr_default'
         type: string
+      custom_app_name:
+        description: 'Tên Ứng Dụng Mod tùy chỉnh'
+        required: false
+        default: ''
+        type: string
+      custom_bundle_id:
+        description: 'Bundle ID riêng cho bản mod'
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - 'v*'
@@ -36,8 +46,6 @@ jobs:
       contents: write
 
     env:
-      PROJECT_NAME: Unity-iPhone
-      SCHEME_NAME: Unity-iPhone
       CONFIGURATION: Release
 
     steps:
@@ -58,7 +66,7 @@ jobs:
 
       - name: 📦 Chuẩn bị source code Xcode
         run: |
-          # Nếu có xcode.zip mà chưa giải nén, tự động giải nén
+          # 1. Giải nén source code nếu ở dạng zip
           if [ -f "xcode.zip" ] && [ ! -d "xcode" ]; then
             echo "Phát hiện xcode.zip, đang giải nén..."
             unzip -q xcode.zip
@@ -67,18 +75,42 @@ jobs:
             unzip -q buiild_ipa/xcode.zip
           fi
 
-          # Định vị thư mục chứa Unity-iPhone.xcodeproj
-          if [ -d "xcode/Unity-iPhone.xcodeproj" ]; then
-            XCODE_DIR="xcode"
-          elif [ -d "Unity-iPhone.xcodeproj" ]; then
-            XCODE_DIR="."
-          else
-            XCODE_DIR=$(dirname $(find . -name "Unity-iPhone.xcodeproj" | head -1))
+          # 2. Định vị file .xcodeproj bất kỳ (hỗ trợ mọi project mod / framework)
+          XCODE_PROJ=$(find . -name "*.xcodeproj" -not -path "*/Pods/*" | head -1)
+          if [ -z "$XCODE_PROJ" ]; then
+            echo "❌ Không tìm thấy file .xcodeproj trong source code!"
+            exit 1
           fi
+          XCODE_DIR=$(dirname "$XCODE_PROJ")
+          PROJ_NAME=$(basename "$XCODE_PROJ" .xcodeproj)
           echo "XCODE_DIR=$XCODE_DIR" >> $GITHUB_ENV
-          echo "Thư mục dự án: $XCODE_DIR"
+          echo "PROJECT_NAME=$PROJ_NAME" >> $GITHUB_ENV
 
-          # Cấp quyền thực thi cho IL2CPP compiler & Bee backend (bắt buộc đối với Unity iOS)
+          # 3. Lấy Scheme tương ứng
+          SCHEME=$(xcodebuild -list -project "$XCODE_PROJ" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | head -1 | xargs)
+          if [ -z "$SCHEME" ]; then
+            SCHEME="$PROJ_NAME"
+          fi
+          echo "SCHEME_NAME=$SCHEME" >> $GITHUB_ENV
+          echo "Dự án: $PROJ_NAME | Scheme: $SCHEME | Đường dẫn: $XCODE_DIR"
+
+          # 4. Tùy biến Bundle ID và App Name riêng cho từng User
+          CUSTOM_BID="${{ inputs.custom_bundle_id }}"
+          CUSTOM_NAME="${{ inputs.custom_app_name }}"
+
+          if [ -n "$CUSTOM_BID" ]; then
+            echo "⚙️ Đang áp dụng Bundle ID cá nhân: $CUSTOM_BID"
+            find "$XCODE_DIR" -name "Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $CUSTOM_BID" {} \; 2>/dev/null || true
+            sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = $CUSTOM_BID;/g" "$XCODE_PROJ/project.pbxproj" 2>/dev/null || true
+          fi
+
+          if [ -n "$CUSTOM_NAME" ]; then
+            echo "⚙️ Đang áp dụng Tên App Mod cá nhân: $CUSTOM_NAME"
+            find "$XCODE_DIR" -name "Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $CUSTOM_NAME" {} \; 2>/dev/null || true
+            find "$XCODE_DIR" -name "Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleName $CUSTOM_NAME" {} \; 2>/dev/null || true
+          fi
+
+          # Cấp quyền thực thi nếu có IL2CPP compiler (Unity)
           chmod -R +x "$XCODE_DIR/Il2CppOutputProject/" 2>/dev/null || true
           chmod +x "$XCODE_DIR/process_symbols.sh" 2>/dev/null || true
 
@@ -107,7 +139,7 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security set-key-settings -lut 21600 "$KEYCHAIN_PATH"
 
           # Import p12
           security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
@@ -150,10 +182,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/payload_staging/Payload"
           cp -R "$APP_PATH" "$RUNNER_TEMP/payload_staging/Payload/"
 
+          CUSTOM_NAME="${{ inputs.custom_app_name }}"
+          SAFE_NAME=$(echo "${CUSTOM_NAME:-$PROJECT_NAME}" | tr -cd '[:alnum:]_-')
+          if [ -z "$SAFE_NAME" ]; then SAFE_NAME="AppMod"; fi
+          IPA_FILE="${SAFE_NAME}_${{ inputs.client_session_id || 'ipa' }}.ipa"
+
           cd "$RUNNER_TEMP/payload_staging"
-          zip -r -y "$IPA_OUTPUT_DIR/NROFLAT_unsigned.ipa" Payload
-          echo "✅ Đã tạo thành công: NROFLAT_unsigned.ipa"
-          ls -lh "$IPA_OUTPUT_DIR/NROFLAT_unsigned.ipa"
+          zip -r -y "$IPA_OUTPUT_DIR/$IPA_FILE" Payload
+          echo "IPA_FILE_NAME=$IPA_FILE" >> $GITHUB_ENV
+          echo "✅ Đã tạo thành công: $IPA_FILE"
+          ls -lh "$IPA_OUTPUT_DIR"
 
       - name: 🏗️ [SIGNED MODE] Build & Export Signed IPA
         if: ${{ (inputs.build_mode == 'signed') && (env.FORCE_UNSIGNED != 'true') }}
@@ -197,7 +235,7 @@ jobs:
       - name: 📤 Upload file IPA lên GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: NROFLAT-${{ inputs.client_session_id || 'ipa' }}
+          name: IPA-${{ inputs.client_session_id || 'custom' }}
           path: ${{ runner.temp }}/output/*.ipa
           retention-days: 14
 
@@ -206,7 +244,7 @@ jobs:
         if: ${{ success() }}
         with:
           tag_name: release-${{ github.run_number }}-${{ inputs.client_session_id || 'usr' }}
-          name: Release #${{ github.run_number }} (${{ inputs.client_session_id || 'usr' }})
+          name: ${{ inputs.custom_app_name || 'Bản Mod' }} #${{ github.run_number }} (${{ inputs.client_session_id || 'usr' }})
           draft: false
           prerelease: false
           files: ${{ runner.temp }}/output/*.ipa
