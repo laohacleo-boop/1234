@@ -106,13 +106,26 @@ jobs:
           echo "XCODE_DIR=$XCODE_DIR" >> $GITHUB_ENV
           echo "PROJECT_NAME=$PROJ_NAME" >> $GITHUB_ENV
 
-          # 4. Lấy Scheme tương ứng
-          SCHEME=$(xcodebuild -list -project "$XCODE_PROJ" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | head -1 | xargs)
+          # 4. Lấy Scheme tương ứng (Ưu tiên App scheme thay vì thư viện con GameAssembly / Framework)
+          ALL_SCHEMES=$(xcodebuild -list -project "$XCODE_PROJ" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[ \t]*//;s/[ \t]*$//' | grep -v '^$' || true)
+          echo "Danh sách Schemes tìm thấy: $ALL_SCHEMES"
+
+          SCHEME=""
+          if echo "$ALL_SCHEMES" | grep -qx "$PROJ_NAME"; then
+            SCHEME="$PROJ_NAME"
+          elif echo "$ALL_SCHEMES" | grep -qx "Unity-iPhone"; then
+            SCHEME="Unity-iPhone"
+          else
+            # Lọc bỏ các scheme thư viện / framework phụ
+            FILTERED_SCHEME=$(echo "$ALL_SCHEMES" | grep -vE '^(GameAssembly|UnityFramework|Pods)' | head -1 || true)
+            SCHEME="${FILTERED_SCHEME:-$(echo "$ALL_SCHEMES" | head -1)}"
+          fi
+
           if [ -z "$SCHEME" ]; then
             SCHEME="$PROJ_NAME"
           fi
           echo "SCHEME_NAME=$SCHEME" >> $GITHUB_ENV
-          echo "Dự án: $PROJ_NAME | Scheme: $SCHEME | Đường dẫn: $XCODE_DIR"
+          echo "🎯 Đã chọn Scheme chính: $SCHEME (Dự án: $PROJ_NAME | Thư mục: $XCODE_DIR)"
 
           # 5. Tùy biến Bundle ID và App Name riêng cho từng User
           CUSTOM_BID="${{ inputs.custom_bundle_id }}"
@@ -193,9 +206,11 @@ jobs:
             COMPILER_INDEX_STORE_ENABLE=NO
 
           echo "📦 Đang đóng gói .app vào Unsigned .ipa..."
-          APP_PATH=$(find "$ARCHIVE_PATH/Products/Applications" -name "*.app" | head -1)
+          APP_PATH=$(find "$ARCHIVE_PATH/Products" -name "*.app" | head -1)
           if [ -z "$APP_PATH" ]; then
             echo "❌ Không tìm thấy file .app trong archive!"
+            echo "Cấu trúc thư mục trong archive:"
+            find "$ARCHIVE_PATH" -maxdepth 4 || true
             exit 1
           fi
 
