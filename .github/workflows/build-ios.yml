@@ -1,0 +1,202 @@
+name: Build iOS IPA (Unity Xcode)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'Chế độ build IPA'
+        required: true
+        default: 'unsigned'
+        type: choice
+        options:
+          - 'unsigned'   # Không cần tài khoản Apple Developer (cho TrollStore, AltStore, Sideloadly, Scarlet, ESign)
+          - 'signed'     # Ký chứng chỉ Apple Developer (cần cấu hình Secrets: P12, Provisioning Profile)
+      xcode_version:
+        description: 'Phiên bản Xcode'
+        required: true
+        default: '15.4'
+        type: choice
+        options:
+          - '15.4'       # Khuyên dùng: Tương thích hoàn hảo Unity 2022.3 LTS
+          - '16.1'       # Bản mới nhất
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build IPA (${{ inputs.build_mode || 'unsigned' }})
+    runs-on: macos-14   # Runner Apple Silicon (M1) - Tốc độ compile IL2CPP nhanh gấp 3 lần Intel
+
+    env:
+      PROJECT_NAME: Unity-iPhone
+      SCHEME_NAME: Unity-iPhone
+      CONFIGURATION: Release
+
+    steps:
+      - name: 📥 Checkout repository (with Git LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: ⚙️ Setup Xcode ${{ inputs.xcode_version || '15.4' }}
+        run: |
+          XCODE_VER="${{ inputs.xcode_version || '15.4' }}"
+          if [ -d "/Applications/Xcode_${XCODE_VER}.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_${XCODE_VER}.app"
+          elif [ -d "/Applications/Xcode.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode.app"
+          fi
+          xcodebuild -version
+
+      - name: 📦 Chuẩn bị source code Xcode
+        run: |
+          # Nếu có xcode.zip mà chưa giải nén, tự động giải nén
+          if [ -f "xcode.zip" ] && [ ! -d "xcode" ]; then
+            echo "Phát hiện xcode.zip, đang giải nén..."
+            unzip -q xcode.zip
+          elif [ -f "buiild_ipa/xcode.zip" ] && [ ! -d "xcode" ]; then
+            echo "Phát hiện buiild_ipa/xcode.zip, đang giải nén..."
+            unzip -q buiild_ipa/xcode.zip
+          fi
+
+          # Định vị thư mục chứa Unity-iPhone.xcodeproj
+          if [ -d "xcode/Unity-iPhone.xcodeproj" ]; then
+            XCODE_DIR="xcode"
+          elif [ -d "Unity-iPhone.xcodeproj" ]; then
+            XCODE_DIR="."
+          else
+            XCODE_DIR=$(dirname $(find . -name "Unity-iPhone.xcodeproj" | head -1))
+          fi
+          echo "XCODE_DIR=$XCODE_DIR" >> $GITHUB_ENV
+          echo "Thư mục dự án: $XCODE_DIR"
+
+          # Cấp quyền thực thi cho IL2CPP compiler & Bee backend (bắt buộc đối với Unity iOS)
+          chmod -R +x "$XCODE_DIR/Il2CppOutputProject/" 2>/dev/null || true
+          chmod +x "$XCODE_DIR/process_symbols.sh" 2>/dev/null || true
+
+      - name: 🔐 [SIGNED MODE] Cài đặt Apple Certificate & Provisioning Profile
+        if: ${{ (inputs.build_mode == 'signed') || (github.event_name == 'push') }}
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'temporal_build_keychain_pass' }}
+        run: |
+          if [ -z "$BUILD_CERTIFICATE_BASE64" ] || [ -z "$BUILD_PROVISION_PROFILE_BASE64" ]; then
+            echo "⚠️ Không tìm thấy Secrets chứng chỉ Apple. Tự động chuyển sang chế độ UNSIGNED!"
+            echo "FORCE_UNSIGNED=true" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          CERT_PATH="$RUNNER_TEMP/build_cert.p12"
+          PP_PATH="$RUNNER_TEMP/build_profile.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > "$PP_PATH"
+
+          # Tạo temporary keychain an toàn
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+
+          # Import p12
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Cài đặt Provisioning Profile
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
+          echo "✅ Cài đặt chứng chỉ và profile thành công!"
+
+      - name: 🏗️ [UNSIGNED MODE] Build & đóng gói Unsigned IPA
+        if: ${{ (inputs.build_mode == 'unsigned') || (env.FORCE_UNSIGNED == 'true') }}
+        run: |
+          echo "🚀 Đang build Unsigned Xcode Archive..."
+          ARCHIVE_PATH="$RUNNER_TEMP/${{ env.PROJECT_NAME }}.xcarchive"
+          IPA_OUTPUT_DIR="$RUNNER_TEMP/output"
+          mkdir -p "$IPA_OUTPUT_DIR"
+
+          xcodebuild archive \
+            -project "$XCODE_DIR/${{ env.PROJECT_NAME }}.xcodeproj" \
+            -scheme "${{ env.SCHEME_NAME }}" \
+            -configuration "${{ env.CONFIGURATION }}" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+          echo "📦 Đang đóng gói .app vào Unsigned .ipa..."
+          APP_PATH=$(find "$ARCHIVE_PATH/Products/Applications" -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Không tìm thấy file .app trong archive!"
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/payload_staging/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/payload_staging/Payload/"
+
+          cd "$RUNNER_TEMP/payload_staging"
+          zip -r -y "$IPA_OUTPUT_DIR/NROFLAT_unsigned.ipa" Payload
+          echo "✅ Đã tạo thành công: NROFLAT_unsigned.ipa"
+          ls -lh "$IPA_OUTPUT_DIR/NROFLAT_unsigned.ipa"
+
+      - name: 🏗️ [SIGNED MODE] Build & Export Signed IPA
+        if: ${{ (inputs.build_mode == 'signed') && (env.FORCE_UNSIGNED != 'true') }}
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          CODE_SIGN_IDENTITY: ${{ secrets.CODE_SIGN_IDENTITY || 'Apple Distribution' }}
+          PROVISION_NAME: ${{ secrets.PROVISION_NAME }}
+        run: |
+          echo "🚀 Đang build Signed Xcode Archive..."
+          ARCHIVE_PATH="$RUNNER_TEMP/${{ env.PROJECT_NAME }}.xcarchive"
+          IPA_OUTPUT_DIR="$RUNNER_TEMP/output"
+          mkdir -p "$IPA_OUTPUT_DIR"
+
+          # Build Archive
+          xcodebuild archive \
+            -project "$XCODE_DIR/${{ env.PROJECT_NAME }}.xcodeproj" \
+            -scheme "${{ env.SCHEME_NAME }}" \
+            -configuration "${{ env.CONFIGURATION }}" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
+            PROVISIONING_PROFILE_SPECIFIER_APP="$PROVISION_NAME"
+
+          # Export IPA
+          EXPORT_PLIST="ExportOptions.plist"
+          if [ ! -f "$EXPORT_PLIST" ]; then
+            EXPORT_PLIST="$XCODE_DIR/../ExportOptions.plist"
+          fi
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$IPA_OUTPUT_DIR" \
+            -exportOptionsPlist "$EXPORT_PLIST"
+
+          echo "✅ Đã export Signed IPA thành công!"
+          ls -lh "$IPA_OUTPUT_DIR"
+
+      - name: 📤 Upload file IPA lên GitHub Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NROFLAT-iOS-IPA
+          path: ${{ runner.temp }}/output/*.ipa
+          retention-days: 14
+
+      - name: 🧹 Dọn dẹp Keychain & Secrets (Clean up)
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
+          rm -rf ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/build_cert.p12" "$RUNNER_TEMP/build_profile.mobileprovision" 2>/dev/null || true
