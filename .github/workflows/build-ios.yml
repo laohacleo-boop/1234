@@ -1,4 +1,5 @@
 name: Build iOS IPA (Unity Xcode)
+run-name: Build Mod - ${{ inputs.client_session_id || 'manual' }} (#${{ github.run_number }})
 
 on:
   workflow_dispatch:
