@@ -24,6 +24,11 @@ on:
         required: false
         default: 'usr_default'
         type: string
+      source_tag:
+        description: 'Tag GitHub Release chứa file zip source (cô lập cho từng user)'
+        required: false
+        default: 'base-template-v1'
+        type: string
       custom_app_name:
         description: 'Tên Ứng Dụng Mod tùy chỉnh'
         required: false
@@ -65,17 +70,30 @@ jobs:
           xcodebuild -version
 
       - name: 📦 Chuẩn bị source code Xcode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Giải nén source code nếu ở dạng zip
-          if [ -f "xcode.zip" ] && [ ! -d "xcode" ]; then
-            echo "Phát hiện xcode.zip, đang giải nén..."
-            unzip -q xcode.zip
-          elif [ -f "buiild_ipa/xcode.zip" ] && [ ! -d "xcode" ]; then
-            echo "Phát hiện buiild_ipa/xcode.zip, đang giải nén..."
-            unzip -q buiild_ipa/xcode.zip
+          CLIENT_ID="${{ inputs.client_session_id || 'usr_default' }}"
+          SOURCE_TAG="${{ inputs.source_tag || 'base-template-v1' }}"
+          echo "📥 Đang tải source code tương ứng cho Session: $CLIENT_ID (Tag: $SOURCE_TAG)..."
+
+          # 1. Tải file source từ GitHub Release bằng GitHub CLI
+          if [ -n "$SOURCE_TAG" ]; then
+            echo "Đang tải release tag $SOURCE_TAG từ GitHub..."
+            gh release download "$SOURCE_TAG" --repo "${{ github.repository }}" --pattern "*.zip" --clobber || true
           fi
 
-          # 2. Định vị file .xcodeproj bất kỳ (hỗ trợ mọi project mod / framework)
+          # 2. Giải nén source code nếu ở dạng zip
+          ZIP_FILE=$(ls *.zip 2>/dev/null | head -1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Phát hiện $ZIP_FILE, đang giải nén..."
+            unzip -q "$ZIP_FILE"
+          elif [ -f "xcode.zip" ] && [ ! -d "xcode" ]; then
+            echo "Phát hiện xcode.zip, đang giải nén..."
+            unzip -q xcode.zip
+          fi
+
+          # 3. Định vị file .xcodeproj bất kỳ (hỗ trợ mọi project mod / framework)
           XCODE_PROJ=$(find . -name "*.xcodeproj" -not -path "*/Pods/*" | head -1)
           if [ -z "$XCODE_PROJ" ]; then
             echo "❌ Không tìm thấy file .xcodeproj trong source code!"
@@ -86,7 +104,7 @@ jobs:
           echo "XCODE_DIR=$XCODE_DIR" >> $GITHUB_ENV
           echo "PROJECT_NAME=$PROJ_NAME" >> $GITHUB_ENV
 
-          # 3. Lấy Scheme tương ứng
+          # 4. Lấy Scheme tương ứng
           SCHEME=$(xcodebuild -list -project "$XCODE_PROJ" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | head -1 | xargs)
           if [ -z "$SCHEME" ]; then
             SCHEME="$PROJ_NAME"
@@ -94,7 +112,7 @@ jobs:
           echo "SCHEME_NAME=$SCHEME" >> $GITHUB_ENV
           echo "Dự án: $PROJ_NAME | Scheme: $SCHEME | Đường dẫn: $XCODE_DIR"
 
-          # 4. Tùy biến Bundle ID và App Name riêng cho từng User
+          # 5. Tùy biến Bundle ID và App Name riêng cho từng User
           CUSTOM_BID="${{ inputs.custom_bundle_id }}"
           CUSTOM_NAME="${{ inputs.custom_app_name }}"
 
@@ -251,7 +269,16 @@ jobs:
 
       - name: 🧹 Dọn dẹp Keychain & Secrets (Clean up)
         if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
           rm -rf ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/build_cert.p12" "$RUNNER_TEMP/build_profile.mobileprovision" 2>/dev/null || true
+
+          # Tự động dọn dẹp file source tạm của user nếu có
+          SOURCE_TAG="${{ inputs.source_tag }}"
+          if [[ "$SOURCE_TAG" =~ ^source-usr_ ]]; then
+            echo "🧹 Đang dọn dẹp file source mod tạm $SOURCE_TAG trên GitHub..."
+            gh release delete "$SOURCE_TAG" --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+          fi
