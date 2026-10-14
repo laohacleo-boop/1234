@@ -19,14 +19,21 @@ on:
         options:
           - '15.4'       # Khuyên dùng: Tương thích hoàn hảo Unity 2022.3 LTS
           - '16.1'       # Bản mới nhất
+      client_session_id:
+        description: 'Session ID của User (Độc lập dữ liệu người dùng)'
+        required: false
+        default: 'usr_default'
+        type: string
   push:
     tags:
       - 'v*'
 
 jobs:
   build:
-    name: Build IPA (${{ inputs.build_mode || 'unsigned' }})
+    name: Build IPA (${{ inputs.build_mode || 'unsigned' }}) - ${{ inputs.client_session_id || 'usr_default' }}
     runs-on: macos-14   # Runner Apple Silicon (M1) - Tốc độ compile IL2CPP nhanh gấp 3 lần Intel
+    permissions:
+      contents: write
 
     env:
       PROJECT_NAME: Unity-iPhone
@@ -190,9 +197,19 @@ jobs:
       - name: 📤 Upload file IPA lên GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: NROFLAT-iOS-IPA
+          name: NROFLAT-${{ inputs.client_session_id || 'ipa' }}
           path: ${{ runner.temp }}/output/*.ipa
           retention-days: 14
+
+      - name: 🚀 Tạo GitHub Release (Tải trực tiếp file .ipa)
+        uses: softprops/action-gh-release@v2
+        if: ${{ success() }}
+        with:
+          tag_name: release-${{ github.run_number }}-${{ inputs.client_session_id || 'usr' }}
+          name: Release #${{ github.run_number }} (${{ inputs.client_session_id || 'usr' }})
+          draft: false
+          prerelease: false
+          files: ${{ runner.temp }}/output/*.ipa
 
       - name: 🧹 Dọn dẹp Keychain & Secrets (Clean up)
         if: always()
