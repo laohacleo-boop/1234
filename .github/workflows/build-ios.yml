@@ -77,9 +77,11 @@ jobs:
           SOURCE_TAG="${{ inputs.source_tag || 'base-template-v1' }}"
           echo "📥 Đang tải source code tương ứng cho Session: $CLIENT_ID (Tag: $SOURCE_TAG)..."
 
-          # 1. Tải file source từ GitHub Release bằng GitHub CLI
+          # 1. Tải file source từ GitHub Release bằng curl trực tiếp hoặc GitHub CLI
           if [ -n "$SOURCE_TAG" ]; then
             echo "Đang tải release tag $SOURCE_TAG từ GitHub..."
+            curl -f -L -s -S "https://github.com/${{ github.repository }}/releases/download/$SOURCE_TAG/mod_source.zip" -o mod_source.zip || \
+            curl -f -L -s -S "https://github.com/${{ github.repository }}/releases/download/$SOURCE_TAG/xcode.zip" -o xcode.zip || \
             gh release download "$SOURCE_TAG" --repo "${{ github.repository }}" --pattern "*.zip" --clobber || true
           fi
 
