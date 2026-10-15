@@ -137,20 +137,8 @@ jobs:
             # Chỉ thay đổi Bundle ID của App chính trong Info.plist (tránh chạm vào UnityFramework / Pods / Frameworks phụ)
             find "$XCODE_DIR" -name "Info.plist" ! -path "*UnityFramework*" ! -path "*Frameworks*" ! -path "*Pods*" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $CUSTOM_BID" {} \; 2>/dev/null || true
             
-            # Cập nhật project.pbxproj: Chỉ thay đổi bundle id của App chính, bảo toàn tuyệt đối com.unity3d.framework cho UnityFramework
-            python3 -c "
-import re
-proj = '$XCODE_PROJ/project.pbxproj'
-try:
-    with open(proj, 'r', encoding='utf-8') as f:
-        content = f.read()
-    content = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER = (?!\x22?com\.unity3d)[^;]+;', 'PRODUCT_BUNDLE_IDENTIFIER = $CUSTOM_BID;', content)
-    with open(proj, 'w', encoding='utf-8') as f:
-        f.write(content)
-    print('✓ Đã cập nhật Bundle ID trong project.pbxproj và bảo toàn UnityFramework!')
-except Exception as e:
-    print('Warning pbxproj update:', e)
-" 2>/dev/null || true
+            # Cập nhật project.pbxproj: Chỉ thay đổi bundle id của App chính, bảo toàn com.unity3d.framework
+            python3 -c "import re; p = '$XCODE_PROJ/project.pbxproj'; c = open(p, 'r', encoding='utf-8').read(); c = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER = (?!\x22?com\.unity3d)[^;]+;', 'PRODUCT_BUNDLE_IDENTIFIER = $CUSTOM_BID;', c); open(p, 'w', encoding='utf-8').write(c); print('✓ pbxproj updated')" 2>/dev/null || true
 
             # Khôi phục dự phòng cho UnityFramework Info.plist nếu có
             find "$XCODE_DIR" -path "*UnityFramework*Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.unity3d.framework" {} \; 2>/dev/null || true
