@@ -133,15 +133,18 @@ jobs:
           CUSTOM_NAME="${{ inputs.custom_app_name }}"
 
           if [ -n "$CUSTOM_BID" ]; then
-            echo "⚙️ Đang áp dụng Bundle ID cá nhân: $CUSTOM_BID"
-            find "$XCODE_DIR" -name "Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $CUSTOM_BID" {} \; 2>/dev/null || true
+            echo "⚙️ Đang áp dụng Bundle ID cá nhân cho App: $CUSTOM_BID"
+            # Chỉ thay đổi Bundle ID của App chính (tránh thay đổi vào UnityFramework / Pods / Frameworks phụ)
+            find "$XCODE_DIR" -name "Info.plist" ! -path "*UnityFramework*" ! -path "*Frameworks*" ! -path "*Pods*" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $CUSTOM_BID" {} \; 2>/dev/null || true
             sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = $CUSTOM_BID;/g" "$XCODE_PROJ/project.pbxproj" 2>/dev/null || true
+            # Khôi phục bundle ID riêng cho UnityFramework để tránh lỗi trùng lặp khi sideload trên iOS
+            find "$XCODE_DIR" -path "*UnityFramework*Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.unity3d.framework" {} \; 2>/dev/null || true
           fi
 
           if [ -n "$CUSTOM_NAME" ]; then
             echo "⚙️ Đang áp dụng Tên App Mod cá nhân: $CUSTOM_NAME"
-            find "$XCODE_DIR" -name "Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $CUSTOM_NAME" {} \; 2>/dev/null || true
-            find "$XCODE_DIR" -name "Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleName $CUSTOM_NAME" {} \; 2>/dev/null || true
+            find "$XCODE_DIR" -name "Info.plist" ! -path "*UnityFramework*" ! -path "*Frameworks*" ! -path "*Pods*" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $CUSTOM_NAME" {} \; 2>/dev/null || true
+            find "$XCODE_DIR" -name "Info.plist" ! -path "*UnityFramework*" ! -path "*Frameworks*" ! -path "*Pods*" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleName $CUSTOM_NAME" {} \; 2>/dev/null || true
           fi
 
           # Cấp quyền thực thi nếu có IL2CPP compiler (Unity)
@@ -218,6 +221,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/payload_staging/Payload"
           cp -R "$APP_PATH" "$RUNNER_TEMP/payload_staging/Payload/"
 
+          # Đảm bảo CFBundleIdentifier trong Frameworks không bị trùng với App chính
+          find "$RUNNER_TEMP/payload_staging/Payload" -path "*/Frameworks/UnityFramework.framework/Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.unity3d.framework" {} \; 2>/dev/null || true
           CUSTOM_NAME="${{ inputs.custom_app_name }}"
           SAFE_NAME=$(echo "${CUSTOM_NAME:-$PROJECT_NAME}" | tr -cd '[:alnum:]_-')
           if [ -z "$SAFE_NAME" ]; then SAFE_NAME="AppMod"; fi
